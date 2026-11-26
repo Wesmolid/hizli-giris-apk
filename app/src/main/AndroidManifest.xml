@@ -2,9 +2,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -26,7 +23,6 @@
             android:name=".AutoFillService"
             android:exported="true"
             android:stopWithTask="false"
-            android:foregroundServiceType="specialUse"
             android:label="Hızlı Giriş Servisi"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
