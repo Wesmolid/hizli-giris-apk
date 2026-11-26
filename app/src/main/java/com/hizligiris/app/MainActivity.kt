@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -68,7 +69,7 @@ class MainActivity : Activity() {
         addInput("id4", "ID 4", false)
 
         addSectionTitle("🔑 Şifreler")
-        addInput("s1", "Şifre 1 (S1)", true)
+        addInput("s1", "Şifre 1 (S1 - Otomatik Doldurulur)", true)
         addInput("s2", "Şifre 2 (S2)", true)
         addInput("s3", "Şifre 3 (S3)", true)
         addInput("s4", "Şifre 4 (S4)", true)
@@ -83,7 +84,7 @@ class MainActivity : Activity() {
         ).apply { topMargin = 15 })
 
         val saveBtn = Button(this).apply {
-            text = "KAYDET"
+            text = "KAYDET VE AKTİF ET"
             setBackgroundColor(Color.parseColor("#ff5722"))
             setTextColor(Color.WHITE)
             setOnClickListener {
@@ -91,7 +92,8 @@ class MainActivity : Activity() {
                 keys.forEach { k -> editor.putString(k, inputs[k]?.text.toString().trim()) }
                 editor.putBoolean("use_paste_mode", pasteSwitch.isChecked)
                 editor.apply()
-                Toast.makeText(this@MainActivity, "Kaydedildi!", Toast.LENGTH_SHORT).show()
+                reviveService()
+                Toast.makeText(this@MainActivity, "Kaydedildi ve Bar Aktif Edildi!", Toast.LENGTH_SHORT).show()
             }
         }
         root.addView(saveBtn, LinearLayout.LayoutParams(
@@ -126,5 +128,30 @@ class MainActivity : Activity() {
 
         scroll.addView(root)
         setContentView(scroll)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Uygulamaya her girildiğinde servisi ve yüzen barı otomatik dirilt!
+        reviveService()
+    }
+
+    private fun reviveService() {
+        try {
+            val intent = Intent(this, AutoFillService::class.java).apply {
+                action = "ACTION_REVIVE_BAR"
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Throwable) {
+            try {
+                startService(Intent(this, AutoFillService::class.java).apply {
+                    action = "ACTION_REVIVE_BAR"
+                })
+            } catch (ex: Throwable) {}
+        }
     }
 }
