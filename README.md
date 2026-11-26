@@ -1,1 +1,0 @@
-# hizli-giris-apk
