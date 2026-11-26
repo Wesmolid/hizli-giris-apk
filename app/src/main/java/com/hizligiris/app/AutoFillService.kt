@@ -1,11 +1,14 @@
 package com.hizligiris.app
 
 import android.accessibilityservice.AccessibilityService
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -38,20 +41,45 @@ class AutoFillService : AccessibilityService() {
     private var lastWindowId = -1
     private var isFilling = false
 
-    @Suppress("DEPRECATION")
-    private fun getPrefs(): SharedPreferences {
-        return getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE or Context.MODE_MULTI_PROCESS)
-    }
-
     override fun onServiceConnected() {
         super.onServiceConnected()
+        startForegroundNotification()
         try {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             mainHandler.postDelayed({ showFloatingBar() }, 200)
         } catch (e: Throwable) {}
     }
 
+    private fun startForegroundNotification() {
+        try {
+            val channelId = "hizli_giris_channel"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "Hızlı Giriş Arka Plan Servisi",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                val manager = getSystemService(NotificationManager::class.java)
+                manager?.createNotificationChannel(channel)
+
+                val notification = Notification.Builder(this, channelId)
+                    .setContentTitle("Hızlı Giriş Aktif")
+                    .setContentText("Otomatik doldurma hazır")
+                    .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                    .setOngoing(true)
+                    .build()
+
+                if (Build.VERSION.SDK_INT >= 34) {
+                    startForeground(101, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                } else {
+                    startForeground(101, notification)
+                }
+            }
+        } catch (e: Throwable) {}
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
+        startForegroundNotification()
         mainHandler.postDelayed({ showFloatingBar() }, 200)
         super.onTaskRemoved(rootIntent)
     }
@@ -94,7 +122,7 @@ class AutoFillService : AccessibilityService() {
         val passNode = editNodes[passIndex]
         val userNode = if (passIndex > 0) editNodes[passIndex - 1] else null
 
-        val prefs = getPrefs()
+        val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
         val autoId1 = prefs.getString("id1", "") ?: ""
         val autoS1 = prefs.getString("s1", "") ?: ""
         val usePaste = prefs.getBoolean("use_paste_mode", false)
@@ -206,7 +234,7 @@ class AutoFillService : AccessibilityService() {
     private fun fillAction(isPasswordBtn: Boolean, value: String, defaultId: String) {
         try {
             copyToClipboard(value)
-            val prefs = getPrefs()
+            val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
             val usePaste = prefs.getBoolean("use_paste_mode", false)
 
             val root = rootInActiveWindow
@@ -262,7 +290,7 @@ class AutoFillService : AccessibilityService() {
         try {
             if (isBarShown || !Settings.canDrawOverlays(this)) return
 
-            val prefs = getPrefs()
+            val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
             val idList = listOf(
                 "👤1" to (prefs.getString("id1", "") ?: ""),
                 "👤2" to (prefs.getString("id2", "") ?: ""),
@@ -349,8 +377,8 @@ class AutoFillService : AccessibilityService() {
 
             val initialPaste = prefs.getBoolean("use_paste_mode", false)
             val modeBtn = createSmallButton(if (initialPaste) "📋" else "⚡", "#37474f") { btn ->
-                val next = !getPrefs().getBoolean("use_paste_mode", false)
-                getPrefs().edit().putBoolean("use_paste_mode", next).apply()
+                val next = !prefs.getBoolean("use_paste_mode", false)
+                prefs.edit().putBoolean("use_paste_mode", next).apply()
                 btn.text = if (next) "📋" else "⚡"
                 Toast.makeText(this@AutoFillService, if (next) "📋 Yapıştır Modu" else "⚡ Hızlı Mod", Toast.LENGTH_SHORT).show()
             }
