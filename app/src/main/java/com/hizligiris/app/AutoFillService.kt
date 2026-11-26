@@ -1,9 +1,13 @@
 package com.hizligiris.app
 
 import android.accessibilityservice.AccessibilityService
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -32,12 +36,47 @@ class AutoFillService : AccessibilityService() {
     private var lastFocusedNode: AccessibilityNodeInfo? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Aynı sayfada sürekli tekrar otomatik doldurmaması için hafıza
+    private var lastAutoFillTime = 0L
+    private var lastAutoFilledSignature = ""
+
     override fun onServiceConnected() {
         super.onServiceConnected()
+        startForegroundNotification()
         try {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-            mainHandler.postDelayed({ showFloatingBar() }, 300)
+            mainHandler.postDelayed({ showFloatingBar() }, 200)
         } catch (e: Throwable) {}
+    }
+
+    private fun startForegroundNotification() {
+        try {
+            val channelId = "hizli_giris_channel"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    channelId,
+                    "Hızlı Giriş Arka Plan Servisi",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                val manager = getSystemService(NotificationManager::class.java)
+                manager?.createNotificationChannel(channel)
+
+                val notification = Notification.Builder(this, channelId)
+                    .setContentTitle("Hızlı Giriş Aktif")
+                    .setContentText("Otomatik ID1 ve S1 doldurma hazır")
+                    .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                    .setOngoing(true)
+                    .build()
+
+                startForeground(101, notification)
+            }
+        } catch (e: Throwable) {}
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Uygulama kapatılsa bile barı ve servisi canlı tut
+        mainHandler.postDelayed({ showFloatingBar() }, 300)
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -55,7 +94,75 @@ class AutoFillService : AccessibilityService() {
             if (!isBarShown) {
                 showFloatingBar()
             }
+
+            // Sayfada değişiklik olduğunda veya yeni pencere açıldığında Otomatik ID1 + S1 kontrolü yap
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                checkAndAutoFillId1AndS1()
+            }
         } catch (e: Throwable) {}
+    }
+
+    private fun checkAndAutoFillId1AndS1() {
+        val now = System.currentTimeMillis()
+        if (now - lastAutoFillTime < 1200) return // Saniyede 1 kereden fazla tetiklenme
+
+        val root = rootInActiveWindow ?: return
+        if (root.packageName == packageName) return
+
+        val editNodes = getAllEditNodes()
+        if (editNodes.isEmpty()) return
+
+        val passIndex = editNodes.indexOfFirst { isPasswordNode(it) }
+        val passNode: AccessibilityNodeInfo?
+        val userNode: AccessibilityNodeInfo?
+
+        if (passIndex != -1) {
+            passNode = editNodes[passIndex]
+            userNode = if (passIndex > 0) editNodes[passIndex - 1] else null
+        } else {
+            return // Şifre kutusu yoksa otomatik doldurma yapma
+        }
+
+        val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
+        val autoId1 = prefs.getString("id1", "") ?: ""
+        val autoS1 = prefs.getString("s1", "") ?: ""
+        val usePaste = prefs.getBoolean("use_paste_mode", false)
+
+        if (autoId1.isEmpty() && autoS1.isEmpty()) return
+
+        // Şifre kutusu ve Kullanıcı adı kutusu şu an boş mu kontrol et
+        val userEmpty = userNode != null && isNodeEmpty(userNode)
+        val passEmpty = passNode != null && isNodeEmpty(passNode)
+
+        // Sayfa imzası (Aynı pencerede sen S2'ye bastıktan sonra tekrar S1 yazmasın diye)
+        val signature = "${root.windowId}_${editNodes.size}_${passNode.hashCode()}"
+
+        if ((userEmpty || passEmpty) && signature != lastAutoFilledSignature) {
+            lastAutoFilledSignature = signature
+            lastAutoFillTime = now
+
+            if (userNode != null && autoId1.isNotEmpty() && userEmpty) {
+                replaceTextInNode(userNode, autoId1, usePaste)
+            }
+
+            if (passNode != null && autoS1.isNotEmpty() && passEmpty) {
+                mainHandler.postDelayed({
+                    replaceTextInNode(passNode, autoS1, usePaste)
+                }, 180)
+            }
+        }
+    }
+
+    private fun isNodeEmpty(node: AccessibilityNodeInfo): Boolean {
+        val text = node.text?.toString()?.trim() ?: ""
+        if (text.isEmpty()) return true
+        val hint = node.hintText?.toString()?.trim() ?: ""
+        // WebView bazen placeholder (ipucu) yazısını text olarak döndürür ("Lütfen şifrenizi girin" gibi)
+        if (hint.isNotEmpty() && text.equals(hint, ignoreCase = true)) return true
+        val lower = text.lowercase()
+        if (lower.contains("lütfen") || lower.contains("kullanıcı adı") || lower.contains("şifre")) return true
+        return false
     }
 
     private fun isPasswordNode(node: AccessibilityNodeInfo): Boolean {
@@ -88,7 +195,6 @@ class AutoFillService : AccessibilityService() {
         if (node == null) return
         try {
             if (isInputNode(node) && node.isVisibleToUser) {
-                // URL çubuğunu (adres satırını) hariç tut
                 val id = (node.viewIdResourceName ?: "").lowercase()
                 if (!id.contains("url_bar") && !id.contains("search")) {
                     list.add(node)
@@ -107,22 +213,31 @@ class AutoFillService : AccessibilityService() {
         } catch (e: Throwable) {}
     }
 
-    private fun inputTextToNode(node: AccessibilityNodeInfo, text: String, usePasteMode: Boolean) {
+    // Kutunun içindeki eski yazıyı (örn. S1'i) tamamen siler ve yenisini (örn. S2'yi) yazar
+    private fun replaceTextInNode(node: AccessibilityNodeInfo, newText: String, usePasteMode: Boolean) {
         try {
-            copyToClipboard(text)
+            copyToClipboard(newText)
             node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
 
-            val args = Bundle()
-            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            // 1. Önce kutunun içindeki eski şifreyi/yazıyı temizle
+            val clearArgs = Bundle()
+            clearArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+
+            // 2. Yeni değeri yaz
+            val setArgs = Bundle()
+            setArgs.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
 
             if (usePasteMode) {
+                // Yapıştır modundaysa gerçek ACTION_PASTE gönder, başarısız olursa SET_TEXT yap
                 val pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
                 if (!pasted) {
-                    node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, setArgs)
                 }
             } else {
-                val setOk = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                // Hızlı moddaysa doğrudan SET_TEXT yap, başarısız olursa ACTION_PASTE yap
+                val setOk = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, setArgs)
                 if (!setOk) {
                     node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
                 }
@@ -174,36 +289,38 @@ class AutoFillService : AccessibilityService() {
 
                 if (!isPasswordBtn) {
                     val target = userNode ?: findFocusedNode() ?: passNode
-                    inputTextToNode(target, value, usePaste)
+                    replaceTextInNode(target, value, usePaste)
                 } else {
-                    if (userNode != null && defaultId.isNotEmpty()) {
-                        inputTextToNode(userNode, defaultId, usePaste)
+                    // S1, S2, S3, S4 butonuna basıldığında:
+                    // Kullanıcı adı boşsa önce ID1'i yaz, sonra şifre kutusundaki eski şifreyi silip yeni seçilen şifreyi yaz!
+                    if (userNode != null && defaultId.isNotEmpty() && isNodeEmpty(userNode)) {
+                        replaceTextInNode(userNode, defaultId, usePaste)
                         mainHandler.postDelayed({
-                            inputTextToNode(passNode, value, usePaste)
+                            replaceTextInNode(passNode, value, usePaste)
                         }, 150)
-                        return
+                    } else {
+                        replaceTextInNode(passNode, value, usePaste)
                     }
-                    inputTextToNode(passNode, value, usePaste)
                 }
             } else if (editNodes.size >= 2) {
                 val userNode = editNodes[0]
                 val passNode = editNodes[1]
                 if (!isPasswordBtn) {
-                    inputTextToNode(userNode, value, usePaste)
+                    replaceTextInNode(userNode, value, usePaste)
                 } else {
-                    if (defaultId.isNotEmpty()) {
-                        inputTextToNode(userNode, defaultId, usePaste)
+                    if (defaultId.isNotEmpty() && isNodeEmpty(userNode)) {
+                        replaceTextInNode(userNode, defaultId, usePaste)
                         mainHandler.postDelayed({
-                            inputTextToNode(passNode, value, usePaste)
+                            replaceTextInNode(passNode, value, usePaste)
                         }, 150)
                     } else {
-                        inputTextToNode(passNode, value, usePaste)
+                        replaceTextInNode(passNode, value, usePaste)
                     }
                 }
             } else {
                 val target = findFocusedNode() ?: editNodes.firstOrNull()
                 if (target != null) {
-                    inputTextToNode(target, value, usePaste)
+                    replaceTextInNode(target, value, usePaste)
                 } else {
                     Toast.makeText(this, "Kopyalandı! Kutuya dokunup tekrar bas.", Toast.LENGTH_SHORT).show()
                 }
