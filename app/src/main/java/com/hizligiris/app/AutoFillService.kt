@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -37,6 +38,11 @@ class AutoFillService : AccessibilityService() {
     private var lastWindowId = -1
     private var isFilling = false
 
+    @Suppress("DEPRECATION")
+    private fun getPrefs(): SharedPreferences {
+        return getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE or Context.MODE_MULTI_PROCESS)
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         try {
@@ -46,7 +52,7 @@ class AutoFillService : AccessibilityService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        mainHandler.postDelayed({ showFloatingBar() }, 300)
+        mainHandler.postDelayed({ showFloatingBar() }, 200)
         super.onTaskRemoved(rootIntent)
     }
 
@@ -63,7 +69,6 @@ class AutoFillService : AccessibilityService() {
                 showFloatingBar()
             }
 
-            // Sadece yeni pencere açıldığında veya odak değiştiğinde kontrol et (Her harf yazışında tarama yapıp çökmesin)
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
                 event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED) {
                 checkAndAutoFillId1AndS1()
@@ -81,7 +86,6 @@ class AutoFillService : AccessibilityService() {
         val editNodes = mutableListOf<AccessibilityNodeInfo>()
         collectEditTexts(root, editNodes, 0)
 
-        // Ekranda 3'ten fazla kutu varsa bu bir "Üye Ol / Kayıt" formudur, otomatik doldurma yapma!
         if (editNodes.isEmpty() || editNodes.size > 3) return
 
         val passIndex = editNodes.indexOfFirst { isPasswordNode(it) }
@@ -90,7 +94,7 @@ class AutoFillService : AccessibilityService() {
         val passNode = editNodes[passIndex]
         val userNode = if (passIndex > 0) editNodes[passIndex - 1] else null
 
-        val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
+        val prefs = getPrefs()
         val autoId1 = prefs.getString("id1", "") ?: ""
         val autoS1 = prefs.getString("s1", "") ?: ""
         val usePaste = prefs.getBoolean("use_paste_mode", false)
@@ -146,7 +150,6 @@ class AutoFillService : AccessibilityService() {
         return cls.contains("edittext")
     }
 
-    // Maksimum derinlik (depth <= 25) ve maksimum kutu limiti (10) ile çökme ve sonsuz döngü %100 engellendi
     private fun collectEditTexts(node: AccessibilityNodeInfo?, list: MutableList<AccessibilityNodeInfo>, depth: Int) {
         if (node == null || depth > 25 || list.size >= 10) return
         try {
@@ -203,7 +206,7 @@ class AutoFillService : AccessibilityService() {
     private fun fillAction(isPasswordBtn: Boolean, value: String, defaultId: String) {
         try {
             copyToClipboard(value)
-            val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
+            val prefs = getPrefs()
             val usePaste = prefs.getBoolean("use_paste_mode", false)
 
             val root = rootInActiveWindow
@@ -259,7 +262,7 @@ class AutoFillService : AccessibilityService() {
         try {
             if (isBarShown || !Settings.canDrawOverlays(this)) return
 
-            val prefs = getSharedPreferences("HizliGirisPrefs", Context.MODE_PRIVATE)
+            val prefs = getPrefs()
             val idList = listOf(
                 "👤1" to (prefs.getString("id1", "") ?: ""),
                 "👤2" to (prefs.getString("id2", "") ?: ""),
@@ -346,8 +349,8 @@ class AutoFillService : AccessibilityService() {
 
             val initialPaste = prefs.getBoolean("use_paste_mode", false)
             val modeBtn = createSmallButton(if (initialPaste) "📋" else "⚡", "#37474f") { btn ->
-                val next = !prefs.getBoolean("use_paste_mode", false)
-                prefs.edit().putBoolean("use_paste_mode", next).apply()
+                val next = !getPrefs().getBoolean("use_paste_mode", false)
+                getPrefs().edit().putBoolean("use_paste_mode", next).apply()
                 btn.text = if (next) "📋" else "⚡"
                 Toast.makeText(this@AutoFillService, if (next) "📋 Yapıştır Modu" else "⚡ Hızlı Mod", Toast.LENGTH_SHORT).show()
             }
