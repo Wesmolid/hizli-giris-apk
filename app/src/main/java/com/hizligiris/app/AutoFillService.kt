@@ -1,9 +1,11 @@
 package com.hizligiris.app
 
 import android.accessibilityservice.AccessibilityService
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -16,6 +18,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -41,12 +44,33 @@ class AutoFillService : AccessibilityService() {
     private var lastWindowId = -1
     private var isFilling = false
 
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        startForegroundNotification()
+    }
+
+    // Uygulamaya girildiğinde (MainActivity) burası tetiklenir ve barı anında geri getirir!
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundNotification()
+        if (windowManager == null) {
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        }
+        mainHandler.post {
+            removeFloatingBar()
+            showFloatingBar()
+        }
+        return START_STICKY
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         startForegroundNotification()
         try {
-            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-            mainHandler.postDelayed({ showFloatingBar() }, 200)
+            if (windowManager == null) {
+                windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+            }
+            mainHandler.postDelayed({ showFloatingBar() }, 150)
         } catch (e: Throwable) {}
     }
 
@@ -78,10 +102,38 @@ class AutoFillService : AccessibilityService() {
         } catch (e: Throwable) {}
     }
 
+    // Bellek temizlendiğinde 1 saniye sonra servisi kendi kendine diriltir
+    private fun scheduleSelfRevive() {
+        try {
+            val restartIntent = Intent(applicationContext, AutoFillService::class.java).apply {
+                action = "ACTION_REVIVE_BAR"
+            }
+            val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_ONE_SHOT
+            }
+            val pendingIntent = PendingIntent.getService(applicationContext, 1, restartIntent, pendingFlags)
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.set(
+                AlarmManager.ELAPSED_REALTIME,
+                SystemClock.elapsedRealtime() + 800,
+                pendingIntent
+            )
+        } catch (e: Throwable) {}
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
+        scheduleSelfRevive()
         startForegroundNotification()
         mainHandler.postDelayed({ showFloatingBar() }, 200)
         super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        removeFloatingBar()
+        scheduleSelfRevive()
+        super.onDestroy()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
